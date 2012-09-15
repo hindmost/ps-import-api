@@ -1,0 +1,390 @@
+<?php
+	public function categoryImportRow($info)
+	{
+		if (!is_array($info)) return false;
+		$catMoved = array();
+		$defaultLanguageId = (int)Configuration::get('PS_LANG_DEFAULT');
+		self::setLocale();
+		
+		self::setDefaultValues($info);
+		$category = new Category();
+		self::array_walk($info, array('AdminImport', 'fillInfo'), $category);
+		traceAdd("categoryImportRow():\n info: ".traceGetObj($info)."\n category: ".traceGetObj($category)."\n");
+
+		if (isset($category->parent) AND is_numeric($category->parent))
+		{
+			if (isset($catMoved[$category->parent]))
+				$category->parent = $catMoved[$category->parent];
+			$category->id_parent = $category->parent;
+		}
+		elseif (isset($category->parent) AND is_string($category->parent))
+		{
+			$categoryParent = Category::searchByName($defaultLanguageId, $category->parent, true);
+			if ($categoryParent['id_category'])
+				$category->id_parent =	(int)($categoryParent['id_category']);
+			else
+			{
+				$categoryToCreate= new Category();
+				$categoryToCreate->name = self::createMultiLangField($category->parent);
+				$categoryToCreate->active = 1;
+				$categoryToCreate->id_parent = 1; // Default parent is home for unknown category to create
+				if (($fieldError = $categoryToCreate->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $categoryToCreate->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true AND $categoryToCreate->add())
+					$category->id_parent = $categoryToCreate->id;
+				else
+				{
+					$this->_errors[] = $categoryToCreate->name[$defaultLanguageId].(isset($categoryToCreate->id) ? ' ('.$categoryToCreate->id.')' : '').' '.Tools::displayError('Cannot be saved');
+					$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+				}
+			}
+		}
+		if (isset($category->link_rewrite) AND !empty($category->link_rewrite[$defaultLanguageId]))
+			$valid_link = Validate::isLinkRewrite($category->link_rewrite[$defaultLanguageId]);
+		else
+			$valid_link = false;
+
+		$bak = $category->link_rewrite[$defaultLanguageId];
+		if ((isset($category->link_rewrite) AND empty($category->link_rewrite[$defaultLanguageId])) OR !$valid_link)
+		{
+			$category->link_rewrite = Tools::link_rewrite($category->name[$defaultLanguageId]);
+			if ($category->link_rewrite == '')
+			{
+				$category->link_rewrite = 'friendly-url-autogeneration-failed';
+				$this->_warnings[] = Tools::displayError('URL rewriting failed to auto-generate a friendly URL for: ').$category->name[$defaultLanguageId];
+			}
+			$category->link_rewrite = self::createMultiLangField($category->link_rewrite);
+		}
+
+		if (!$valid_link)
+			$this->_warnings[] = Tools::displayError('Rewrite link for').' '.$bak.(isset($info['id']) ? ' (ID '.$info['id'].') ' : '').' '.Tools::displayError('was re-written as').' '.$category->link_rewrite[$defaultLanguageId];
+		$res = false;
+		if (($fieldError = $category->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $category->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true)
+		{
+			$categoryAlreadyCreated = Category::searchByNameAndParentCategoryId($defaultLanguageId, $category->name[$defaultLanguageId], $category->id_parent);
+
+			// If category already in base, get id category back
+			if ($categoryAlreadyCreated['id_category'])
+			{
+				$catMoved[$category->id] = (int)($categoryAlreadyCreated['id_category']);
+				$category->id =	(int)($categoryAlreadyCreated['id_category']);
+			}
+
+			/* No automatic nTree regeneration for import */
+			$category->doNotRegenerateNTree = true;
+
+			// If id category AND id category already in base, trying to update
+			if ($category->id AND $category->categoryExists($category->id))
+				$res = $category->update();
+
+			// If no id_category or update failed
+			if (!$res) {
+				$res = $category->add();
+				traceAdd("category->add()\n");
+			}
+		}
+		//copying images of categories
+		if (isset($category->image) AND !empty($category->image))
+			if (!(self::copyImg($category->id, NULL, $category->image, 'categories')))
+				$this->_warnings[] = $category->image.' '.Tools::displayError('Cannot be copied');
+		// If both failed, mysql error
+		if (!$res)
+		{
+			$this->_errors[] = $info['name'].(isset($info['id']) ? ' (ID '.$info['id'].')' : '').' '.Tools::displayError('Cannot be saved');
+			$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+		}
+		return $category->id;
+	}
+
+	public function productImportRow($info, $features= 0, $bParentCategories= true)
+	{
+		if (!is_array($info)) return false;
+		global $cookie;
+		$defaultLanguageId = (int)(Configuration::get('PS_LANG_DEFAULT'));
+		self::setLocale();
+		
+		if (array_key_exists('id', $info) AND (int)($info['id']) AND Product::existsInDatabase((int)($info['id'])))
+		{
+			$product = new Product((int)($info['id']));
+			$categoryData = Product::getProductCategories((int)($product->id));
+			foreach ($categoryData as $tmp)
+				$product->category[] = $tmp['id_category'];
+		}
+		else
+			$product = new Product();
+		self::setEntityDefaultValues($product);
+		self::array_walk($info, array('AdminImport', 'fillInfo'), $product);
+		traceAdd("productImportRow('$bParentCategories'):\n info: ".traceGetObj($info)."\n features: ".traceGetObj($features)."\n product: ".traceGetObj($product)."\n");
+
+		if ((int)$product->id_tax_rules_group != 0)
+		{
+			if (Validate::isLoadedObject(new TaxRulesGroup($product->id_tax_rules_group)))
+					$product->tax_rate = TaxRulesGroup::getTaxesRate((int)$product->id_tax_rules_group, Configuration::get('PS_COUNTRY_DEFAULT'), 0, 0);
+			else
+				$this->_addProductWarning('id_tax_rules_group', $product->id_tax_rules_group, Tools::displayError('Invalid tax rule group ID, you first need a group with this ID.'));
+		}
+		if (isset($product->manufacturer) AND is_numeric($product->manufacturer) AND Manufacturer::manufacturerExists((int)($product->manufacturer)))
+			$product->id_manufacturer = (int)($product->manufacturer);
+		elseif (isset($product->manufacturer) AND is_string($product->manufacturer) AND !empty($product->manufacturer))
+		{
+			if ($manufacturer = Manufacturer::getIdByName($product->manufacturer))
+				$product->id_manufacturer = (int)($manufacturer);
+			else
+			{
+				$manufacturer = new Manufacturer();
+				$manufacturer->name = $product->manufacturer;
+				if (($fieldError = $manufacturer->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $manufacturer->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true AND $manufacturer->add())
+					$product->id_manufacturer = (int)($manufacturer->id);
+				else
+				{
+					$this->_errors[] = $manufacturer->name.(isset($manufacturer->id) ? ' ('.$manufacturer->id.')' : '').' '.Tools::displayError('Cannot be saved');
+					$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+				}
+			}
+		}
+
+		if (isset($product->supplier) AND is_numeric($product->supplier) AND Supplier::supplierExists((int)($product->supplier)))
+			$product->id_supplier = (int)($product->supplier);
+		elseif (isset($product->supplier) AND is_string($product->supplier) AND !empty($product->supplier))
+		{
+			if ($supplier = Supplier::getIdByName($product->supplier))
+				$product->id_supplier = (int)($supplier);
+			else
+			{
+				$supplier = new Supplier();
+				$supplier->name = $product->supplier;
+				if (($fieldError = $supplier->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $supplier->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true AND $supplier->add())
+					$product->id_supplier = (int)($supplier->id);
+				else
+				{
+					$this->_errors[] = $supplier->name.(isset($supplier->id) ? ' ('.$supplier->id.')' : '').' '.Tools::displayError('Cannot be saved');
+					$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+				}
+			}
+		}
+
+		if (isset($product->price_tex) AND !isset($product->price_tin))
+			$product->price = $product->price_tex;
+		elseif (isset($product->price_tin) AND !isset($product->price_tex))
+		{
+			$product->price = $product->price_tin;
+			// If a tax is already included in price, withdraw it from price
+			if ($product->tax_rate)
+				$product->price = (float)(number_format($product->price / (1 + $product->tax_rate / 100), 6, '.', ''));
+		}
+		elseif (isset($product->price_tin) AND isset($product->price_tex))
+			$product->price = $product->price_tex;
+
+		if (isset($product->category) AND is_array($product->category) and sizeof($product->category))
+		{
+			$product->id_category = array(); // Reset default values array
+
+			foreach ($product->category AS $value)
+			{
+				if (is_numeric($value))
+				{
+					if (Category::categoryExists((int)($value)))
+						$product->id_category[] = (int)($value);
+					else
+					{
+						$categoryToCreate= new Category();
+						$categoryToCreate->id = (int)($value);
+						$categoryToCreate->name = self::createMultiLangField($value);
+						$categoryToCreate->active = 1;
+						$categoryToCreate->id_parent = 1; // Default parent is home for unknown category to create
+						if (($fieldError = $categoryToCreate->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $categoryToCreate->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true AND $categoryToCreate->add())
+							$product->id_category[] = (int)($categoryToCreate->id);
+						else
+						{
+							$this->_errors[] = $categoryToCreate->name[$defaultLanguageId].(isset($categoryToCreate->id) ? ' ('.$categoryToCreate->id.')' : '').' '.Tools::displayError('Cannot be saved');
+							$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+						}
+					}
+				}
+				elseif (is_string($value) AND !empty($value))
+				{
+					$category = Category::searchByName($defaultLanguageId, $value, true);
+					if ($category['id_category'])
+					{
+						$product->id_category[] =	(int)($category['id_category']);
+					}
+					else
+					{
+						$categoryToCreate= new Category();
+						$categoryToCreate->name = self::createMultiLangField($value);
+						$categoryToCreate->active = 1;
+						$categoryToCreate->id_parent = 1; // Default parent is home for unknown category to create
+						if (($fieldError = $categoryToCreate->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $categoryToCreate->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true AND $categoryToCreate->add())
+							$product->id_category[] = (int)($categoryToCreate->id);
+						else
+						{
+							$this->_errors[] = $categoryToCreate->name[$defaultLanguageId].(isset($categoryToCreate->id) ? ' ('.$categoryToCreate->id.')' : '').' '.Tools::displayError('Cannot be saved');
+							$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+						}
+					}
+				}
+			}
+		}
+
+		if ($bParentCategories) {
+			$a_idsparent= array();
+			foreach ($product->id_category AS $id) {
+				$cat= new Category($id);
+				if (!is_array($a_ps= $cat->getParentsCategories()) || count($a_ps)< 1) continue;
+				foreach ($a_ps AS $a_p)
+					$a_idsparent[]= $a_p['id_category'];
+				$a_idsparent[]= $a_ps[count($a_ps)- 1]['id_parent'];
+			}
+			traceAdd("productImportRow(): point 1: id_category: ".traceGetObj($product->id_category)."\n a_idsparent: ".traceGetObj($a_idsparent)."\n");
+			$product->id_category= array_unique(array_merge($product->id_category, $a_idsparent));
+		}
+		$product->id_category_default = isset($product->id_category[0]) ? (int)($product->id_category[0]) : '';
+		traceAdd("productImportRow(): point 2: id_category: ".traceGetObj($product->id_category)."\n id_category_default=".$product->id_category_default."\n");
+		$link_rewrite = (is_array($product->link_rewrite) && count($product->link_rewrite)) ? $product->link_rewrite[$defaultLanguageId] : '';
+
+		$valid_link = Validate::isLinkRewrite($link_rewrite);
+
+		if ((isset($product->link_rewrite[$defaultLanguageId]) AND empty($product->link_rewrite[$defaultLanguageId])) OR !$valid_link)
+		{
+			$link_rewrite = Tools::link_rewrite($product->name[$defaultLanguageId]);
+			if ($link_rewrite == '')
+				$link_rewrite = 'friendly-url-autogeneration-failed';
+		}
+		if (!$valid_link)
+			$this->_warnings[] = Tools::displayError('Rewrite link for'). ' '.$link_rewrite.(isset($info['id']) ? ' (ID '.$info['id'].') ' : '').' '.Tools::displayError('was re-written as').' '.$link_rewrite;
+
+		$product->link_rewrite = self::createMultiLangField($link_rewrite);
+
+		$res = false;
+		$fieldError = $product->validateFields(UNFRIENDLY_ERROR, true);
+		$langFieldError = $product->validateFieldsLang(UNFRIENDLY_ERROR, true);
+		if ($fieldError === true AND $langFieldError === true)
+		{
+			traceAdd("productImportRow(): point 3.\n");
+			// check quantity
+			if ($product->quantity == NULL)
+				$product->quantity = 0;
+			// If id product AND id product already in base, trying to update
+			if ($product->id AND Product::existsInDatabase((int)($product->id)))
+			{
+
+				$datas = Db::getInstance()->getRow('SELECT `date_add` FROM `'._DB_PREFIX_.'product` WHERE `id_product` = '.(int)($product->id));
+				$product->date_add = pSQL($datas['date_add']);
+				$res = $product->update();
+			}
+			// If no id_product or update failed
+			if (!$res)
+			{
+				traceAdd("productImportRow(): point 4.\n");
+				if (isset($product->date_add) && $product->date_add != '')
+					$res = $product->add(false);
+				else
+					$res = $product->add();
+			}
+		}
+		// If both failed, mysql error
+		if (!$res)
+		{
+			$this->_errors[] = $info['name'].(isset($info['id']) ? ' (ID '.$info['id'].')' : '').' '.Tools::displayError('Cannot be saved');
+			$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+
+		}
+		else
+		{
+			// SpecificPrice (only the basic reduction feature is supported by the import)
+			if ((isset($info['reduction_price']) AND $info['reduction_price'] > 0) OR (isset($info['reduction_percent']) AND $info['reduction_percent'] > 0))
+			{
+				$specificPrice = new SpecificPrice();
+				$specificPrice->id_product = (int)($product->id);
+				$specificPrice->id_shop = (int)(Shop::getCurrentShop());
+				$specificPrice->id_currency = 0;
+				$specificPrice->id_country = 0;
+				$specificPrice->id_group = 0;
+				$specificPrice->price = 0.00;
+				$specificPrice->from_quantity = 1;
+				$specificPrice->reduction = (isset($info['reduction_price']) AND $info['reduction_price']) ? $info['reduction_price'] : $info['reduction_percent'] / 100;
+				$specificPrice->reduction_type = (isset($info['reduction_price']) AND $info['reduction_price']) ? 'amount' : 'percentage';
+				$specificPrice->from = (isset($info['reduction_from']) AND Validate::isDate($info['reduction_from'])) ? $info['reduction_from'] : '0000-00-00 00:00:00';
+				$specificPrice->to = (isset($info['reduction_to']) AND Validate::isDate($info['reduction_to'])) ? $info['reduction_to'] : '0000-00-00 00:00:00';
+				if (!$specificPrice->add())
+					$this->_addProductWarning($info['name'], $product->id, $this->l('Discount is invalid'));
+			}
+
+			if (isset($product->tags) AND !empty($product->tags))
+			{
+				// Delete tags for this id product, for no duplicating error
+				Tag::deleteTagsForProduct($product->id);
+
+				$tag = new Tag();
+				if (!is_array($product->tags))
+				{
+					$product->tags = self::createMultiLangField($product->tags);
+					foreach($product->tags AS $key => $tags)
+					{
+						$isTagAdded = $tag->addTags($key, $product->id, $tags);
+						if (!$isTagAdded)
+						{
+							$this->_addProductWarning($info['name'], $product->id, $this->l('Tags list').' '.$this->l('is invalid'));
+							break;
+						}
+					}
+
+				}
+				else
+				{
+					foreach ($product->tags AS $key => $tags)
+					{
+						$str = '';
+						foreach($tags AS $one_tag)
+							$str .= $one_tag.',';
+						$str = rtrim($str, ',');
+
+						$isTagAdded = $tag->addTags($key, $product->id, $str);
+						if (!$isTagAdded)
+						{
+							$this->_addProductWarning($info['name'], $product->id,'Invalid tag(s) ('.$str.')');
+							break;
+						}
+					}
+				}
+			}
+			//delete existing images if "delete_existing_images" is set to 1
+			if (isset($product->delete_existing_images))
+				if ((bool)$product->delete_existing_images)
+					$product->deleteImages();
+			elseif (isset($product->image) AND is_array($product->image) AND sizeof($product->image))
+				$product->deleteImages();
+			
+			if (isset($product->image) AND is_array($product->image) and sizeof($product->image))
+			{
+				$productHasImages = (bool)Image::getImages((int)($cookie->id_lang), (int)($product->id));
+				foreach ($product->image AS $key => $url)
+					if (!empty($url))
+					{
+						$image = new Image();
+						$image->id_product = (int)($product->id);
+						$image->position = Image::getHighestPosition($product->id) + 1;
+						$image->cover = (!$key AND !$productHasImages) ? true : false;
+						$image->legend = self::createMultiLangField($product->name[$defaultLanguageId]);
+						if (($fieldError = $image->validateFields(UNFRIENDLY_ERROR, true)) === true AND ($langFieldError = $image->validateFieldsLang(UNFRIENDLY_ERROR, true)) === true AND $image->add())
+						{
+							if (!self::copyImg($product->id, $image->id, $url))
+								$this->_warnings[] = Tools::displayError('Error copying image: ').$url;
+						}
+						else
+						{
+							$this->_warnings[] = $image->legend[$defaultLanguageId].(isset($image->id_product) ? ' ('.$image->id_product.')' : '').' '.Tools::displayError('Cannot be saved');
+							$this->_errors[] = ($fieldError !== true ? $fieldError : '').($langFieldError !== true ? $langFieldError : '').mysql_error();
+						}
+					}
+			}
+			if (isset($product->id_category))
+				$product->updateCategories(array_map('intval', $product->id_category));
+
+			if (is_array($features))
+				foreach ($features AS $name => $value) {
+					$id_feature = Feature::addFeatureImport($name);
+					$id_feature_value = FeatureValue::addFeatureValueImport($id_feature, $value);
+					Product::addFeatureProductImport($product->id, $id_feature, $id_feature_value);
+				}
+		}
+		return $product->id;
+	}
