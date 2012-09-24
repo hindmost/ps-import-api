@@ -1,40 +1,56 @@
-ps-import-api
-=============
+# ps-import-api
 
 PrestaShop Import API
 
 Provides interface to set of functions that implements import operations in PrestaShop (http://prestashop.com/).
+
 Intended for use in a web scraping scripts (plugins) for PrestaShop.
+
 Tested on PrestaShop v1.4.x.
 
 
-INSTALLATION
-============
+## INSTALLATION
 
 Put all .php files in your plugin's directory, within main directory of PrestaShop.
+
 Execute script "ps_import_api.install.php" in one the following formats through console (1), or browser (2).
+
 Format (1):
+
+``` bash
 PLUGIN_PATH/ps_import_api.install.php ADMIN_FILE_PATH
+```
+
 Format (2):
+
+``` bash
 PLUGIN_URL/ps_import_api.install.php?filename=ADMIN_FILE_PATH
+```
 
 Notations:
-PLUGIN_PATH - path to your plugin's directory.
-PLUGIN_URL - URL (+path) to your plugin's directory.
-ADMIN_FILE_PATH - relative path to the file "AdminImport.php" (one of the PrestaShop Admin source files), from your plugin's directory.
+
+* PLUGIN_PATH - path to your plugin's directory.
+* PLUGIN_URL - URL (+path) to your plugin's directory.
+* ADMIN_FILE_PATH - relative path to the file "AdminImport.php" (one of the PrestaShop Admin source files), from your plugin's directory.
 
 Examples:
-1) ps_import_api.install.php ../tabs/AdminImport.php
-2) http://yoursite.com/scraper/ps_import_api.install.php?filename=../tabs/AdminImport.php
+
+1)
+``` bash
+ps_import_api.install.php ../tabs/AdminImport.php
+```
+
+2)
+``` bash
+http://yoursite.com/scraper/ps_import_api.install.php?filename=../tabs/AdminImport.php
+```
 
 
-SAMPLE OF USING
-===============
+## SAMPLE OF USING
 
-/*
-* Assume that the plugin's directory is in the PrestaShop Admin directory
-* (e.g. "/admin/scraper/")
-*/
+Assume that the plugin's directory is in the PrestaShop Admin directory (e.g. "/admin/scraper/").
+
+``` php
 
 define('PS_ADMIN_DIR', getcwd().'/..');
 include PS_ADMIN_DIR.'/../config/config.inc.php';
@@ -80,3 +96,5 @@ $id_product= PSImportAPI::updateProduct($id_product, $a_info, array($id_cat));
 
 /* This method must (may) be called on the end of import process: */
 PSImportAPI::finishImport();
+
+```
