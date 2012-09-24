@@ -1,13 +1,16 @@
 # PrestaShop Import API
 
 Provides interface to set of functions that implements import operations in PrestaShop (http://prestashop.com/).
+
 Intended for use in a web scraping scripts (plugins) for PrestaShop.
+
 Tested on PrestaShop v1.4.x.
 
 
 ## INSTALLATION
 
 Put all .php files in your plugin's directory, within main directory of PrestaShop.
+
 Execute script "ps_import_api.install.php" in one the following formats through console (1), or browser (2).
 
 Format (1):
